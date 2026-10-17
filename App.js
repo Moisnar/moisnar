@@ -68,7 +68,7 @@ const V = Object.freeze({
   email: s => EMAIL.test(s) && !s.includes('..')
 });
 
-const IMG_HOSTS = Object.freeze(['googleusercontent.com', 'twimg.com']);
+const IMG_HOSTS = Object.freeze(['googleusercontent.com', 'twimg.com', 'res.cloudinary.com']
 const httpsOk = u => { try { const x = new URL(u); return x.protocol === 'https:' && !x.username && !x.password && !x.port && IMG_HOSTS.some(h => x.hostname === h || x.hostname.endsWith('.' + h)); } catch (e) { return false; } };
 const DATA_IMG = Object.freeze(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/i);
 const MAX_DATA = 512 * 1024;
@@ -256,7 +256,7 @@ let signingOut = false;
 const fbReady = (async () => {
   try {
     const [appM, authM] = await Promise.all([import(FB_BASE + 'firebase-app.js'), import(FB_BASE + 'firebase-auth.js')]);
-    const auth = authM.getAuth(appM.initializeApp(firebaseConfig));
+   const app = appM.initializeApp(firebaseConfig); const auth = authM.getAuth(app);
     const fb = { auth, provider: new authM.GoogleAuthProvider(), twitterProvider: new authM.TwitterAuthProvider(), signInWithPopup: authM.signInWithPopup, signOut: authM.signOut };
     authM.onAuthStateChanged(auth, u => {
       if (u) { if (session && session.id === u.uid && applyUser(u)) render(true); return; }
