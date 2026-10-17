@@ -379,7 +379,7 @@ function loginDo(provider, el) {
       setSession(await call('login', provider)); await refreshNotifs(); closeOv();
       if (['gadd', 'welcome'].includes(cur().n)) stack = [{ n: 'home' }];
       const f = Core.pending; Core.pending = null; render(); if (f) f();
-    } catch (e) { log('login_fail', { m: String(e && e.message).slice(0, 40) }); closeOv(); toast(T('Login failed. Try again.', 'تعذّر تسجيل الدخول. حاول مرة أخرى.')); }
+    } catch (e) { log('login_fail', { m: String(e && e.message).slice(0, 40) }); closeOv(); toast(String((e && (e.code || e.message)) || '').slice(0, 60) + ' | Login failed'); console.error('login_error', e); }
   });
 }
 function logout() {
