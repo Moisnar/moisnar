@@ -5,7 +5,7 @@
    - Everything else (API calls, uploads, other origins) is NOT intercepted: when the backend is connected it keeps working as is.
    Bump VERSION on every deploy to refresh the shell cache. */
 'use strict';
-const VERSION = 'v1.0.2';
+const VERSION = 'v1.0.3';
 const SHELL = 'moisnar-shell-' + VERSION;
 const RUNTIME = 'moisnar-runtime-' + VERSION;
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
