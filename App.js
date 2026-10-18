@@ -68,7 +68,7 @@ const V = Object.freeze({
   email: s => EMAIL.test(s) && !s.includes('..')
 });
 
-const IMG_HOSTS = Object.freeze(['googleusercontent.com', 'twimg.com', 'res.cloudinary.com']
+const IMG_HOSTS = Object.freeze(['googleusercontent.com', 'twimg.com', 'res.cloudinary.com']);
 const httpsOk = u => { try { const x = new URL(u); return x.protocol === 'https:' && !x.username && !x.password && !x.port && IMG_HOSTS.some(h => x.hostname === h || x.hostname.endsWith('.' + h)); } catch (e) { return false; } };
 const DATA_IMG = Object.freeze(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/i);
 const MAX_DATA = 512 * 1024;
@@ -176,10 +176,11 @@ const cleanHint = (h, prev) => (h && typeof h === 'object' && typeof h.id === 's
 try { const d = JSON.parse(localStorage.getItem(SK) || 'null'); if (d && typeof d === 'object') { store.hint = cleanHint(d.hint); store.read = Array.isArray(d.read) ? d.read.filter(x => typeof x === 'string' && ID.test(x)).slice(0, 100) : []; store.asked = d.asked === true; } } catch (e) { log('core_store_corrupt', {}, 'info'); }
 const persist = () => { try { localStorage.setItem(SK, JSON.stringify({ hint: store.hint, read: store.read, asked: store.asked })); } catch (e) {} };
 let session = null;
+const LONG_EXP = () => Date.now() + 3650 * 864e5;
 const sOK = s => !!s && Number.isFinite(s.exp) && s.exp > Date.now() && /^[\w-]{1,64}$/.test(s.id);
 const authed = () => { if (session && !sOK(session)) endSession('expired'); return !!session; };
 Object.defineProperty(state, 'user', { get: () => (authed() ? { id: session.id, provider: session.provider, uid: session.uid } : null), set() {}, enumerable: false, configurable: false });
-function setSession(s) { const c = cleanHint(Object.assign({ exp: Date.now() + 8 * 36e5 }, s)); if (!c) throw new Error('bad_session'); session = c; store.hint = c; persist(); }
+function setSession(s) { const c = cleanHint(Object.assign({ exp: LONG_EXP() }, s)); if (!c) throw new Error('bad_session'); session = c; store.hint = c; persist(); }
 const FILES = new Map();
 function wipeLocal() {
   state.favs = []; state.prof = { name: '', phone: '', email: '', bio: '', country: null, gov: null, photo: null }; state.contact = { phone: '', email: '' };
@@ -231,7 +232,7 @@ const Core = {
   config: { maintenance: false, requireLogin: false },
   loading: true, errs: null, cerr: false, pending: null, notifs: [], offShown: false,
   adapter: {
-    login: async provider => ({ id: 'u_' + Date.now(), provider, exp: Date.now() + 8 * 36e5 }),
+    login: async provider => ({ id: 'u_' + Date.now(), provider, exp: LONG_EXP() }),
     session: async hint => (hint && hint.exp > Date.now() ? hint : null),
     logout: async () => {},
     health: async () => ({ maintenance: Core.config.maintenance }),
@@ -256,8 +257,13 @@ let signingOut = false;
 const fbReady = (async () => {
   try {
     const [appM, authM] = await Promise.all([import(FB_BASE + 'firebase-app.js'), import(FB_BASE + 'firebase-auth.js')]);
-   const app = appM.initializeApp(firebaseConfig); const auth = authM.getAuth(app);
+    const app = appM.initializeApp(firebaseConfig); const auth = authM.getAuth(app);
     const fb = { auth, provider: new authM.GoogleAuthProvider(), twitterProvider: new authM.TwitterAuthProvider(), signInWithPopup: authM.signInWithPopup, signOut: authM.signOut };
+    try { auth.languageCode = state.lang === 'ar' ? 'ar' : 'en'; } catch (e) {}
+    try {
+      const fsM = await import(FB_BASE + 'firebase-firestore.js');
+      Object.assign(fb, { db: fsM.getFirestore(app), doc: fsM.doc, collection: fsM.collection, setDoc: fsM.setDoc, getDoc: fsM.getDoc, getDocs: fsM.getDocs, updateDoc: fsM.updateDoc, deleteDoc: fsM.deleteDoc, query: fsM.query, where: fsM.where, serverTimestamp: fsM.serverTimestamp });
+    } catch (e) { log('firebase_data_load_fail', { m: String(e && e.message).slice(0, 40) }, 'info'); }
     authM.onAuthStateChanged(auth, u => {
       if (u) { if (session && session.id === u.uid && applyUser(u)) render(true); return; }
       setTimeout(() => { if (session && ['google', 'x'].includes(session.provider) && !signingOut && !auth.currentUser) endSession('other_tab'); }, 300);
@@ -278,16 +284,18 @@ async function handleGoogleSignIn() {
   let r;
   try { r = await fb.signInWithPopup(fb.auth, fb.provider); }
   catch (e) { if (e && ['auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(e.code)) throw Object.assign(new Error('cancelled'), { status: 400 }); throw e; }
+  if (!r || !r.user || !r.user.uid) throw new Error('no_user');
   applyUser(r.user);
-  return { id: r.user.uid, provider: 'google', exp: Date.now() + 8 * 36e5 };
+  return { id: r.user.uid, provider: 'google', exp: LONG_EXP() };
 }
 async function handleTwitterLogin() {
   const fb = await fbReady; if (!fb) throw new Error('firebase_unavailable');
   let r;
   try { r = await fb.signInWithPopup(fb.auth, fb.twitterProvider); }
   catch (e) { if (e && ['auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(e.code)) throw Object.assign(new Error('cancelled'), { status: 400 }); throw e; }
+  if (!r || !r.user || !r.user.uid) throw new Error('no_user');
   applyUser(r.user);
-  return { id: r.user.uid, provider: 'x', exp: Date.now() + 8 * 36e5 };
+  return { id: r.user.uid, provider: 'x', exp: LONG_EXP() };
 }
 async function handleSignOut() {
   const fb = await fbReady; if (!fb) return;
@@ -301,11 +309,87 @@ Core.adapter.session = async hint => {
   const fb = await fbReady; if (!fb) return null;
   await fb.auth.authStateReady();
   const u = fb.auth.currentUser;
-  if (!u || u.uid !== hint.id || !(hint.exp > Date.now())) return null;
+  if (!u || u.uid !== hint.id) return null;
+  const pid = hint.provider === 'google' ? 'google.com' : 'twitter.com';
+  if (!(u.providerData || []).some(x => x && x.providerId === pid)) return null;
   applyUser(u);
-  return hint;
+  return Object.assign({}, hint, { exp: LONG_EXP() });
 };
 Core.adapter.logout = handleSignOut;
+
+/* ---------- Firestore + Storage ---------- */
+let lastErr = '';
+const errCode = e => String((e && (e.code || e.message)) || '').slice(0, 60);
+async function fbx() {
+  const fb = await fbReady;
+  if (!fb || !fb.db) throw Object.assign(new Error('firebase_data_unavailable'), { code: 'data-unavailable' });
+  await fb.auth.authStateReady();
+  if (!fb.auth.currentUser) throw Object.assign(new Error('not_signed_in'), { code: 'auth/not-signed-in' });
+  return fb;
+}
+const strOrNull = (v, n) => (v == null ? null : String(v).slice(0, n));
+const userDoc = async patch => { const fb = await fbx(); await fb.setDoc(fb.doc(fb.db, 'users', fb.auth.currentUser.uid), patch, { merge: true }); };
+const CLD = { cloud: 'ca28badb', preset: 'moisnar_unsigned' };
+async function cldUpload(file, folder, signal) {
+  const fd = new FormData(); fd.append('file', file); fd.append('upload_preset', CLD.preset); fd.append('folder', folder);
+  const res = await fetch(`https://api.cloudinary.com/v1_1/${CLD.cloud}/image/upload`, { method: 'POST', body: fd, signal });
+  let j = null; try { j = await res.json(); } catch (e) {}
+  if (!res.ok || !j || typeof j.secure_url !== 'string') throw Object.assign(new Error((j && j.error && j.error.message) || 'upload_failed'), { code: 'cloudinary/' + res.status });
+  return j.secure_url.replace('/upload/', '/upload/f_auto,q_auto/');
+}
+Core.adapter.uploadPhoto = async (file, idx, signal) => { await fbx(); return { url: await cldUpload(file, 'moisnar/products', signal) }; };
+Core.adapter.uploadAvatar = async (file, signal) => { await fbx(); return { url: await cldUpload(file, 'moisnar/avatars', signal) }; };
+Core.adapter.saveProduct = async pl => {
+  const fb = await fbx(), uid = fb.auth.currentUser.uid;
+  const data = {
+    ownerId: uid, name: strOrNull(pl.name, 80) || '', cat: strOrNull(pl.cat, 30) || 'home', price: Math.min(Math.max(+pl.price || 0, 0), 1e9), qty: Math.min(Math.max(parseInt(pl.qty, 10) || 1, 1), 1e6),
+    country: strOrNull(pl.country, 2) || 'SY', gov: Number.isInteger(+pl.gov) ? +pl.gov : 0, desc: strOrNull(pl.desc, 2000), notes: strOrNull(pl.notes, 1000),
+    imgs: (Array.isArray(pl.images) ? pl.images : []).filter(u => typeof u === 'string' && u.startsWith('https://')).slice(0, MAXP)
+  };
+  if (pl.id && ID.test(pl.id)) { await fb.setDoc(fb.doc(fb.db, 'products', pl.id), Object.assign(data, { updatedAt: fb.serverTimestamp() }), { merge: true }); return { id: pl.id }; }
+  const ref = fb.doc(fb.collection(fb.db, 'products'));
+  await fb.setDoc(ref, Object.assign(data, { cond: 'new', status: 'active', t: Date.now(), createdAt: fb.serverTimestamp() }));
+  return { id: ref.id };
+};
+Core.adapter.saveProfile = async pl => {
+  const pr = state.prof;
+  await userDoc({ prof: { name: strOrNull(pl.name, 400) || '', bio: strOrNull(pl.bio, 2000) || '', phone: strOrNull(pl.phone, 100) || '', email: strOrNull(pl.email, 400) || '', country: pr.country || null, gov: Number.isInteger(pr.gov) ? pr.gov : null, photo: typeof pl.photo === 'string' && pl.photo.startsWith('https://') ? pl.photo : null } });
+};
+async function loadCloud() {
+  const fb = await fbReady; if (!fb || !fb.db || !session) return;
+  await fb.auth.authStateReady(); const u = fb.auth.currentUser; if (!u || session.id !== u.uid) return;
+  const [us, qs] = await Promise.all([fb.getDoc(fb.doc(fb.db, 'users', u.uid)), fb.getDocs(fb.query(fb.collection(fb.db, 'products'), fb.where('ownerId', '==', u.uid)))]);
+  const t2 = (v, n, m) => (typeof v === 'string' ? clean(v, m).slice(0, n) : '');
+  const d = us.exists() ? us.data() : {};
+  if (d.prof && typeof d.prof === 'object') { const pr = d.prof; state.prof = { name: t2(pr.name, 400), bio: t2(pr.bio, 2000, 1), phone: t2(pr.phone, 100), email: t2(pr.email, 400), country: /^[A-Z]{2}$/.test(pr.country) ? pr.country : null, gov: Number.isInteger(pr.gov) && pr.gov >= 0 && pr.gov < 500 ? pr.gov : null, photo: okUrl(pr.photo || '') || null }; }
+  if (d.contact && typeof d.contact === 'object') state.contact = { phone: t2(d.contact.phone, 100), email: t2(d.contact.email, 400) };
+  if (Array.isArray(d.favs)) state.favs = d.favs.filter((x, i, a) => typeof x === 'string' && ID.test(x) && a.indexOf(x) === i).slice(0, 500);
+  const seller = typeof SELLER !== 'undefined' ? SELLER : {};
+  const list = [];
+  qs.forEach(s => {
+    const x = s.data(); if (!ID.test(s.id)) return;
+    const nm = t2(x.name, 80), imgs = (Array.isArray(x.imgs) ? x.imgs : []).map(okUrl).filter(Boolean).slice(0, MAXP);
+    list.push({ id: s.id, name: nm, en: nm, ar: nm, cat: CATIDS.includes(x.cat) ? x.cat : 'home', price: Math.min(Math.max(+x.price || 0, 0), 1e9), cond: x.cond === 'used' ? 'used' : 'new', qty: Math.min(Math.max(parseInt(x.qty, 10) || 1, 1), 1e6), country: /^[A-Z]{2}$/.test(x.country) ? x.country : 'SY', gov: Number.isInteger(x.gov) && x.gov >= 0 && x.gov < 500 ? x.gov : 0, desc: x.desc == null ? null : t2(x.desc, 2000, 1), notes: x.notes == null ? null : t2(x.notes, 1000, 1), imgs, n: imgs.length || 1, t: Number.isFinite(x.t) ? x.t : Date.now(), mine: true, cloud: true, status: x.status === 'sold' ? 'sold' : 'active', seller });
+  });
+  list.sort((a, b) => b.t - a.t);
+  state.products = state.products.filter(p => !p.mine).concat([]); state.products.unshift(...list.slice(0, 200));
+  try { save(); } catch (e) {}
+}
+const cloudLoad = async () => { try { await loadCloud(); } catch (e) { log('cloud_load_fail', { m: errCode(e) }, 'info'); } };
+let favT = 0;
+const syncFavs = () => { clearTimeout(favT); favT = setTimeout(() => { userDoc({ favs: state.favs.filter(x => ID.test(x)).slice(0, 500) }).catch(e => log('fav_sync_fail', { m: errCode(e) }, 'info')); }, 800); };
+const syncFail = e => { log('cloud_sync_fail', { m: errCode(e) }, 'info'); toast(errCode(e) + ' | ' + T('Cloud sync failed.', 'تعذّرت المزامنة مع السحابة.')); };
+async function cloudAfter(n, id, wasCloud, imgs0) {
+  try {
+    if (n === 'fav') return syncFavs();
+    if (n === 'saveContact') return await userDoc({ contact: { phone: strOrNull(state.contact.phone, 100) || '', email: strOrNull(state.contact.email, 400) || '' } });
+    if (!wasCloud || !ID.test(id || '')) return;
+    const fb = await fbx(), ref = fb.doc(fb.db, 'products', id);
+    if (n === 'soldDo') await fb.updateDoc(ref, { status: 'sold' });
+    else if (n === 'repost') await fb.updateDoc(ref, { status: 'active', t: Date.now() });
+    else if (n === 'delDo') { await fb.deleteDoc(ref); }
+  } catch (e) { syncFail(e); }
+}
 
 const addIcon = (k, v) => { if (!P[k]) P[k] = v; };
 addIcon('lock', '<rect x="5" y="11" width="14" height="10" rx="3"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>');
@@ -372,14 +456,30 @@ function ask(k, after) {
   Core.pending = after || null;
   openSheet(`<div><button class="x36" data-a="closeov">${ic('x', 18, { w: 2.2 })}</button></div><div style="text-align:center"><div style="width:72px;height:72px;border-radius:50%;background:var(--light);color:var(--dark);display:inline-flex;align-items:center;justify-content:center">${ic('lock', 32, { w: 1.8 })}</div><h3 style="font-size:24px;margin:14px 0 8px">${T('Log in to continue', 'سجّل دخولك للمتابعة')}</h3><p style="color:var(--muted);margin-bottom:12px">${pick(G[k][3])}</p></div>${socials()}${terms()}`);
 }
+const LOGIN_MSG = {
+  'auth/popup-blocked': ['Your browser blocked the login window. Allow pop-ups and try again.', 'المتصفح حظر نافذة تسجيل الدخول. اسمح بالنوافذ المنبثقة وحاول مرة أخرى.'],
+  'auth/network-request-failed': ['No internet connection. Check your network and try again.', 'لا يوجد اتصال بالإنترنت. تحقق من الشبكة وحاول مرة أخرى.'],
+  'auth/account-exists-with-different-credential': ['This email is already registered with another login method. Use that method instead.', 'هذا البريد مسجّل بطريقة دخول أخرى. استخدم الطريقة الأخرى.'],
+  'auth/unauthorized-domain': ['This domain is not authorized in Firebase.', 'هذا الدومين غير مصرّح به في Firebase.'],
+  'auth/operation-not-allowed': ['This login method is not enabled yet.', 'طريقة الدخول هذه غير مفعّلة بعد.'],
+  'auth/too-many-requests': ['Too many attempts. Please try again later.', 'محاولات كثيرة. حاول لاحقاً.'],
+  'auth/user-disabled': ['This account has been disabled.', 'تم تعطيل هذا الحساب.'],
+  'auth/internal-error': ['Login service error. Check the provider settings and try again.', 'خطأ في خدمة الدخول. تحقق من إعدادات المزوّد وحاول مرة أخرى.'],
+  'auth/invalid-credential': ['Login was rejected by the provider. Check its keys and callback URL.', 'رفض المزوّد تسجيل الدخول. تحقق من مفاتيحه ورابط الرجوع.']
+};
+function loginToast(e) {
+  if (!e || e.message === 'cancelled' || e.rl) return;
+  const c = e.code || '', m = LOGIN_MSG[c];
+  toast(m ? T(m[0], m[1]) + ' [' + c + ']' : T('Login failed. Try again.', 'تعذّر تسجيل الدخول. حاول مرة أخرى.') + (c || e.message ? ' [' + String(c || e.message).slice(0, 50) + ']' : ''));
+}
 function loginDo(provider, el) {
   return once('login', async () => {
     el.classList.add('dis'); el.insertAdjacentHTML('afterbegin', `<span class="cspin">${ic('refresh', 20, { w: 2 })}</span>`);
     try {
-      setSession(await call('login', provider)); await refreshNotifs(); closeOv();
+      setSession(await call('login', provider)); await cloudLoad(); await refreshNotifs(); closeOv();
       if (['gadd', 'welcome'].includes(cur().n)) stack = [{ n: 'home' }];
       const f = Core.pending; Core.pending = null; render(); if (f) f();
-    } catch (e) { log('login_fail', { m: String(e && e.message).slice(0, 40) }); closeOv(); toast(String((e && (e.code || e.message)) || '').slice(0, 60) + ' | Login failed'); console.error('login_error', e); }
+    } catch (e) { log('login_fail', { m: String(e && (e.code || e.message)).slice(0, 40) }); closeOv(); loginToast(e); console.error('login_error', e); }
   });
 }
 function logout() {
@@ -502,7 +602,7 @@ const storageReady = () => typeof Core.adapter.uploadPhoto === 'function';
 const optimizing = () => T('Optimizing photos… please wait a moment.', 'جارٍ تحسين الصور… انتظر لحظة.');
 const productPayload = urls => ({ name: F.name, cat: F.cat, price: +F.price || 0, qty: +F.qty, country: F.country, gov: +F.gov, desc: F.desc, notes: F.notes, images: urls });
 function failDlg(title) {
-  dlg('alert', 'var(--redbg)', '#B42318', title || T('Photo upload failed', 'فشل رفع الصور'), T('Check your internet connection and try again. Your product details are saved.', 'تأكد من اتصالك بالإنترنت ثم حاول مرة أخرى. بيانات المنتج محفوظة.'), '', btn2('upRetry', T('Try again', 'إعادة المحاولة')) + btn2('closeov', T('Cancel', 'إلغاء'), 1));
+  dlg('alert', 'var(--redbg)', '#B42318', title || T('Photo upload failed', 'فشل رفع الصور'), T('Check your internet connection and try again. Your product details are saved.', 'تأكد من اتصالك بالإنترنت ثم حاول مرة أخرى. بيانات المنتج محفوظة.') + (lastErr ? ' [' + lastErr + ']' : ''), '', btn2('upRetry', T('Try again', 'إعادة المحاولة')) + btn2('closeov', T('Cancel', 'إلغاء'), 1));
 }
 async function uploadSet(ph) {
   const n = ph.length; let done = ph.filter(u => u.startsWith('https://') || UP.has(u)).length; progDlg(done, n);
@@ -512,26 +612,27 @@ async function uploadSet(ph) {
       if (u.startsWith('https://')) { urls.push(u); continue; }
       if (!UP.has(u)) {
         const f = FILES.get(u); if (!f || PH.get(u) !== 'ready') throw new Error('not_compressed');
-        const r = await call('uploadPhoto', f, ph.indexOf(u)), url = r && r.url;
+        const r = await call('uploadPhoto', f, ph.indexOf(u)); let url = r && r.url;
         if (typeof url !== 'string' || !url.startsWith('https://') || !(url = okUrl(url))) throw new Error('bad_url');
         UP.set(u, url); done++; progDlg(done, n);
       }
       urls.push(UP.get(u));
     }
     return urls;
-  } catch (e) { log('upload_fail', { m: String(e && e.message).slice(0, 30) }, 'info'); failDlg(); return null; }
+  } catch (e) { log('upload_fail', { m: String(e && e.message).slice(0, 30) }, 'info'); lastErr = errCode(e); console.error('upload_error', e); failDlg(); return null; }
 }
 function uploadAll() {
   return once('upload', async () => {
     if (!lim('publish', 8, 6e5)) return RL.note(T('You are publishing too fast. Please wait a few minutes.', 'تنشر بسرعة كبيرة. انتظر بضع دقائق.'));
     const ph = [...F.photos]; if (ph.some(isProc)) return toast(optimizing());
     let urls = null;
+    let cid = null;
     if (storageReady()) {
       urls = await uploadSet(ph); if (!urls) return;
-      if (typeof Core.adapter.saveProduct === 'function') { try { await call('saveProduct', productPayload(urls)); } catch (e) { log('save_fail', {}, 'info'); return failDlg(T("Couldn't save the product", 'تعذّر حفظ المنتج')); } }
+      if (typeof Core.adapter.saveProduct === 'function') { try { const sv = await call('saveProduct', productPayload(urls)); cid = sv && typeof sv.id === 'string' && ID.test(sv.id) ? sv.id : null; } catch (e) { log('save_fail', {}, 'info'); lastErr = errCode(e); console.error('save_error', e); return failDlg(T("Couldn't save the product", 'تعذّر حفظ المنتج')); } }
       await wait(250); closeOv();
     } else log('storage_not_connected', {}, 'info');
-    const p = createProduct(); p.cloud = !!urls;
+    const p = createProduct(); if (cid) p.id = cid; p.cloud = !!cid;
     if (urls) { p.imgs = urls; ph.forEach(u => { if (u.startsWith('blob:')) release(u); }); }
     try { save(); } catch (e) {}
     Core.errs = null; stack.pop(); go('done', { id: p.id });
@@ -545,12 +646,13 @@ function publish() {
 }
 ['newForm', 'formFrom'].forEach(k => { const o = window[k]; window[k] = function () { Core.errs = null; try { (F && F.photos || []).forEach(releaseIfFree); } catch (e) {} return o.apply(this, arguments); }; });
 
+const cloudLoadBoot = () => (session ? cloudLoad() : Promise.resolve());
 function boot() {
   return once('boot', async () => {
     feedSeed = newSeed(); Core.loading = true; bar(35); render(true);
     try { const h = await call('health'); Core.config.maintenance = !!h && h.maintenance === true; } catch (e) { log('health_fail', {}, 'info'); }
     try { session = store.hint ? cleanHint(await call('session', store.hint), store.hint) : null; if (!sOK(session)) { session = null; store.hint = null; persist(); } else if (store.hint && store.hint.uid !== session.uid) { store.hint = session; persist(); } } catch (e) { session = null; log('session_fail', {}, 'info'); }
-    await refreshNotifs(); await wait(450); Core.loading = false; bar(100);
+    await cloudLoadBoot(); await refreshNotifs(); await wait(450); Core.loading = false; bar(100);
     if (Core.config.requireLogin && !authed()) stack = [{ n: 'welcome' }];
     render(true);
   });
@@ -814,9 +916,9 @@ window.act = function (a, el) {
     if (n === 'rmPhoto') { const u = F.photos[+arg]; if (typeof u === 'string') setTimeout(() => releaseIfFree(u), 0); }
     if (n === 'saveEdit') {
       if (F.photos.some(isProc)) return toast(optimizing());
-      if (storageReady() && F.photos.some(u => u.startsWith('blob:'))) return once('upload', async () => {
+      if (storageReady()) return once('upload', async () => {
         const urls = await uploadSet([...F.photos]); if (!urls) return;
-        if (typeof Core.adapter.saveProduct === 'function') { try { await call('saveProduct', Object.assign(productPayload(urls), { id: F.id })); } catch (e) { log('save_fail', {}, 'info'); return failDlg(T("Couldn't save the product", 'تعذّر حفظ المنتج')); } }
+        if (typeof Core.adapter.saveProduct === 'function') { try { await call('saveProduct', Object.assign(productPayload(urls), { id: F.id })); } catch (e) { log('save_fail', {}, 'info'); lastErr = errCode(e); console.error('save_error', e); return failDlg(T("Couldn't save the product", 'تعذّر حفظ المنتج')); } }
         F.photos.forEach(u => { if (u.startsWith('blob:')) release(u); }); F.photos = urls; closeOv(); act1(a, el);
       });
     }
@@ -833,7 +935,10 @@ window.act = function (a, el) {
         } catch (e) { log('profile_save_fail', { m: String(e && e.message).slice(0, 30) }, 'info'); toast(T('Upload failed. Check your connection and try again.', 'فشل الرفع. تحقق من اتصالك وحاول مرة أخرى.')); }
       });
     }
-    return act1(a, el);
+    const pre = (n === 'delDo' || n === 'soldDo' || n === 'repost') ? byId(id) : null, wasCloud = !!(pre && pre.cloud), imgs0 = pre ? [...(pre.imgs || [])] : [];
+    const out = act1(a, el);
+    if (['fav', 'saveContact', 'delDo', 'soldDo', 'repost'].includes(n) && authed() && !(n === 'saveContact' && Core.cerr)) cloudAfter(n, id, wasCloud, imgs0);
+    return out;
   } catch (e) { fail(e, 'act'); }
 };
 
@@ -976,3 +1081,4 @@ Object.defineProperty(window, 'MoisnarCore', { value: Object.freeze({
 window.addEventListener('DOMContentLoaded', boot);
 if (document.readyState !== 'loading') boot();
 })();
+
