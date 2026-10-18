@@ -1081,4 +1081,3 @@ Object.defineProperty(window, 'MoisnarCore', { value: Object.freeze({
 window.addEventListener('DOMContentLoaded', boot);
 if (document.readyState !== 'loading') boot();
 })();
-
